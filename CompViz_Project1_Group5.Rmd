@@ -1,0 +1,502 @@
+---
+title: "Project1_Group5"
+author: "Sakshi, Anshita, Shubham, Unnati"
+date: "03/01/2022"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+## Including all the required libraries
+
+```{r}
+
+library(lubridate)
+library(dplyr)
+library(dlookr)
+library(ggplot2)
+library(igraph)
+library(reshape)
+library(zoo)
+library(ggmap)
+library(tidyverse)
+library(ggraph)
+library(tidygraph)
+library(ggpubr)
+library(sf)
+library("wordcloud2")
+library(wordcloud)
+library(webshot)
+library(plotly)
+library(forecast)
+library(knitr)
+
+#To display map in mac
+webshot::install_phantomjs() 
+
+#To display map in Windows
+install_phantomjs(version = "2.1.1",
+  baseURL = "https://github.com/wch/webshot/releases/download/v0.3.1/",
+  force = FALSE)
+```
+
+## Loading dataset
+
+```{r}
+
+df_bike_sharing <-  read.csv("hour.csv", header = TRUE, sep = ",")
+df_bluebikes_edited <- read.csv("Bluebikes_edited.csv", header = TRUE,
+                                strip.white = TRUE, sep = ",")
+
+View(df_bike_sharing)
+View(df_bluebikes_edited)
+
+```
+
+## Renaming columns to incorporate sensible column names
+
+```{r}
+
+col_names <- c("ID", "Date", "Season", "Year", "Month", "Hour", "Holiday", "Weekday", "Working_Day",
+       "Weather_Situation", "Norm_Temp", "Norm_Feels_Temp", "Norm_Humidity", "Norm_Windspeed",
+       "Users_Unregistered", "Users_Registered", "Users_Total" )
+colnames(df_bike_sharing) <- col_names
+
+```
+
+## Number of instances and attributes
+
+```{r}
+dim(df_bike_sharing)
+```
+
+## Checking the datatypes for the columns
+
+```{r}
+sapply(df_bike_sharing, class)
+```
+
+## Dataset summary
+
+```{r}
+summary(df_bike_sharing)
+```
+
+## ------------------------- Data Cleaning and Preprocessing ------------------------- ##
+## Diagnose dataset to look for missing values
+
+```{r}
+diagnose(df_bike_sharing) # no missing values found
+```
+
+## Changing attributes, creating new ones for more interpretability
+
+```{r}
+
+df_bike_sharing$Date <- dplyr::case_when(
+      substring(df_bike_sharing$Date,1,4) == "2011" ~ 
+        sub("2011", "2020",df_bike_sharing$Date),
+      substring(df_bike_sharing$Date,1,4) =="2012" ~
+        sub("2012", "2021",df_bike_sharing$Date),
+      TRUE ~ as.character(df_bike_sharing$Date)
+)
+
+# Changing the 'Date' column datatype to Date
+df_bike_sharing$Date <- as.Date(df_bike_sharing$Date)
+
+# Extracting the Day from Date and storing in a new column
+df_bike_sharing$Day_of_Month <- format(df_bike_sharing$Date, format = "%d")
+
+# Converting Month numerical values to their designated month names
+df_bike_sharing$Month <- month.abb[df_bike_sharing$Month]
+
+# Converting Year column from values 0 and 1 to actual year values
+# The value 0 represents year 2011 and 1 represents 2012
+df_bike_sharing$Year <- ifelse(df_bike_sharing$Year == 0, 2020, 2021)
+
+# Converting Weekday numerical values to their weekday names
+df_bike_sharing$Day_of_Week <- dplyr::case_when(
+  df_bike_sharing$Weekday == 0 ~ "Sun",
+  df_bike_sharing$Weekday == 1 ~ "Mon",
+  df_bike_sharing$Weekday == 2 ~ "Tue",
+  df_bike_sharing$Weekday == 3 ~ "Wed",
+  df_bike_sharing$Weekday == 4 ~ "Thur",
+  df_bike_sharing$Weekday == 5 ~ "Fri",
+  df_bike_sharing$Weekday == 6 ~ "Sat",
+  TRUE ~ as.character(df_bike_sharing$Weekday)
+)
+
+# Converting integer values of Hour to HH:MM format
+df_bike_sharing$Hour <- sprintf("%02d", df_bike_sharing$Hour)
+
+# Adding Yearly Quarter Column
+df_bike_sharing$Quarter = as.yearqtr(df_bike_sharing$Date, format = "%Yq%q")
+
+# Converting numerical Season column to categorical to denote seasons:
+# 1 - Winter
+# 2 - Spring
+# 3 - Summer
+# 4 - Fall
+df_bike_sharing$Season <- as.character(factor(df_bike_sharing$Season, levels = 1:4,
+                                 labels = c("Winter", "Spring", "Summer", "Fall")))
+
+# Converting Weather Situation to its respective assigned values
+# 1: Clear, Few clouds, Partly cloudy, Partly cloudy
+# 2: Mist + Cloudy, Mist + Broken clouds, Mist + Few clouds, Mist
+# 3: Light Snow, Light Rain + Thunderstorm + Scattered clouds, Light Rain + Scattered clouds
+# 4: Heavy Rain + Ice Pallets + Thunderstorm + Mist, Snow + Fog
+df_bike_sharing$Weather_Situation <- as.character(factor(df_bike_sharing$Weather_Situation, levels = 1:4,
+                                 labels = c("Clear or Partly Cloudy",
+                                            "Mist and Cloudy",
+                                            "Light Rain or Snow",
+                                            "Heavy Rain or Snow")))
+
+```
+
+## Creating new columns to convert normalized values to actual values
+## The temperature columns Temp, Feels_like_temp are normalized and calculated using:
+## (t - t_min) / (t_max - t_min)
+## Temp : t_min = -8, t_max = +39 (Celsius scale)
+## Feels_like_temp : t_min = -16, t_max = +50 (Celsius scale)
+
+## Humidity and Windspeed columns are normalized to the scale:
+## Humidity - max value of 100
+## Windspeed - max value of 67
+
+```{r}
+
+# Converting temperature values to their actual values and storing in new columns
+df_bike_sharing$Temp <- (df_bike_sharing$Norm_Temp * (39 + 8)) - 8
+df_bike_sharing$Feels_Temp <- (df_bike_sharing$Norm_Temp * (50 + 16)) - 16
+
+# Converting Humidity and Windspeed
+df_bike_sharing$Humidity <- df_bike_sharing$Norm_Humidity * 100
+df_bike_sharing$Windspeed <- df_bike_sharing$Norm_Windspeed * 67
+
+```
+
+## Fabricating the routes for bike sharing data
+
+```{r}
+
+df_bluebikes_routes_unique <- df_bluebikes_edited %>%
+  filter(start.station.name != end.station.name) 
+
+# Reading the start and end locations into a dataframe
+df_bluebikes_routes <- dplyr::select(df_bluebikes_routes_unique,
+                          c(start.station.name,end.station.name,
+                          Source.Longitude,Source.Latitude,
+                          Destination.Longitude,Destination.Latitude))
+
+df_bluebikes_routes_dist <- distinct(df_bluebikes_routes)
+
+# Sampling the routes to create random routes for each row of original data
+df_random_routes <- sample_n(df_bluebikes_routes_dist, nrow(df_bike_sharing), replace = TRUE)
+df_bike_sharing <- cbind(df_bike_sharing, df_random_routes)
+ncol(df_bike_sharing)
+colnames(df_bike_sharing)[c(25, 26, 27, 28, 29, 30)] <- c("Source", "Destination",
+                                                  "Src_Long", "Src_Lat", "Dest_Long", "Dest_Lat")
+
+```
+
+## Viewing the Final Data -- Ready for Visualization
+
+```{r}
+View(df_bike_sharing)
+```
+
+## ------------------------------- Data Visualization ------------------------------- ##
+## Grouped Bar Chart
+
+## This chart helps us to visually compare the monthly bike usage for years 2020 ans 2021
+
+```{r}
+
+df_bike_grouped_bar <- df_bike_sharing %>%
+  select(Month, Year, Users_Total) %>%
+  group_by(Month, Year) %>%
+  summarise(Users = sum(Users_Total))
+
+df_bike_grouped_bar$Month = factor(df_bike_grouped_bar$Month, levels = month.abb)
+
+ggplot(df_bike_grouped_bar, aes(x = Month, y = Users, fill = as.factor(Year))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  geom_text(aes(label = Users),
+            vjust = 0.5, hjust = -0.1, color = "black", size = 1.7, position = position_dodge(0.9)) +
+  scale_fill_brewer(palette = "Dark2") +
+  ggtitle("Comparison of Monthly Bike Usage for 2020 and 2021") +
+  xlab("Months") +
+  ylab("Total Number of Users") +
+  labs(fill = "Year") +
+  scale_x_discrete(limits = ~month.abb) +
+  theme(plot.title = element_text(size = 13, face = "bold.italic", color = "black", hjust = 0.5),
+        axis.title.x = element_text(size = 7, face = "bold"),
+        axis.title.y = element_text(size = 7, face = "bold"),
+        axis.text.x = element_text(size = 5, angle = 0),
+        axis.text.y = element_text(size = 5, angle = 90),
+        legend.position = "right",
+        legend.title = element_text(size = 7, face = "bold"),
+        legend.text = element_text(size = 7, face = "bold"),
+        strip.text = element_text(size = 7))
+
+```
+
+## Box Plot
+
+## This plot shows the weekly distribution of registered and unregistered users
+
+```{r}
+
+df_bike_boxplot <- df_bike_sharing %>%
+  select(Weekday, Users_Unregistered, Users_Registered)
+
+df_bike_boxplot_long <- df_bike_boxplot %>% 
+  pivot_longer(-Weekday,
+               names_to = "Type_of_User",
+               values_to = "Users")
+
+ggplot(data = df_bike_boxplot_long, aes(x = as.character(Weekday), y = Users)) +
+  geom_boxplot(aes(fill = Type_of_User)) +
+  scale_x_discrete(labels = c("0" = "Sunday",
+                              "1" = "Monday",
+                              "2" = "Tuesday",
+                              "3" = "Wednesday",
+                              "4" = "Thursday",
+                              "5" = "Friday",
+                              "6" = "Saturday")) +
+  ggtitle("Weekly Distribution of Registered and Unregistered Users") +
+  xlab("Weekday") +
+  ylab("Number of Users") +
+  labs(fill = "Type of Users") +
+  theme(plot.title = element_text(size = 13, face = "bold.italic", color = "black", hjust = 0.5),
+        axis.title.x = element_text(size = 7, face = "bold"),
+        axis.title.y = element_text(size = 7, face = "bold"),
+        axis.text.x = element_text(size = 7),
+        axis.text.y = element_text(size = 7),
+        legend.position = "bottom",
+        legend.title = element_text(size = 7, face = "bold"),
+        legend.text = element_text(size = 7),
+        strip.text = element_text(size = 7)) +
+  stat_summary(fun.y = "mean", colour = "darkred", geom = "point",
+               shape = 19, size = 3, show.legend = FALSE) 
+
+```
+
+## Heatmap
+
+## This heatmap shows the correlation between Registerd and Unregistered Users with the Weather Attributes
+
+```{r}
+
+# Create a dataframe with numerical columns
+df_numeric <- df_bike_sharing %>%
+  select(Temp, Feels_Temp, Humidity, Windspeed, Users_Unregistered, Users_Registered)
+
+# Correlation Matrix of all numerical columns
+df_bike_heatmap <- round(cor(df_numeric), 2)
+df_bike_heatmap <- melt(df_bike_heatmap)
+
+# Plotting heatmap
+ggplot(data = df_bike_heatmap, aes(x = X1, y = X2, fill = value)) + 
+  geom_tile() +
+  geom_text(aes(X1, X2, label = value), color = "black", size = 4) +
+  ggtitle("Correlation Heatmap of Users and Weather Attributes") +
+  theme_minimal() +
+  labs(fill = "Correlation Value") +
+  theme(plot.title = element_text(size = 13, face = "bold.italic", hjust = 0.5),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(size = 7, angle = 90),
+        axis.text.y = element_text(size = 7),
+        legend.position = "right",
+        legend.title = element_text(size = 7, face = "bold"),
+        legend.text = element_text(size = 7, face = "bold"))
+
+```
+
+## Bar Plot
+
+## This chart shows the hourly usage of bikes based on different seasons
+
+```{r}
+
+df_bike_bar <- df_bike_sharing %>%
+  select(Hour, Season, Users_Total) %>%
+  group_by(Hour, Season) %>%
+  summarise(Users = ceiling(mean(Users_Total)))
+
+# Plotting bar graph
+
+# Since the x label used in the bar graph is ordinal categorical (hours of the day), hence we have not sorted the bars in decreasing order of their heights.
+ggplot(df_bike_bar, aes(x = Hour, y = Users)) +
+  geom_bar(stat = "identity", position="dodge", aes(fill = Season)) +
+  facet_wrap(~Season, scales = "free_x") +
+  geom_text(aes(label = Users), angle = 0, vjust = -0.5,
+            color = "black", size = 1.5, angle = 90) +
+  scale_fill_brewer(palette = "Dark2") +
+  ggtitle("Hourly Usage of Bikes Based on Different Seasons") +
+  xlab("Hour of the Day") +
+  ylab("Number of Users") +
+  theme(plot.title = element_text(size = 13, face = "bold.italic", color = "black", hjust = 0.5),
+        axis.title.x = element_text(size = 7, face = "bold"),
+        axis.title.y = element_text(size = 7, face = "bold"),
+        axis.text.x = element_text(size = 5, angle = 90),
+        axis.text.y = element_text(size = 5),
+        legend.position = "right",
+        legend.title = element_text(size = 7, face = "bold"),
+        legend.text = element_text(size = 7, face = "bold"),
+        strip.text = element_text(size = 7))
+
+```
+
+## Line Chart
+
+## This chart shows the quarterlu usage of bikes based on weather situation
+## We are also predicting the number of users for next quarters
+
+```{r Line Chart}
+
+df_bike_line <- df_bike_sharing %>%
+  group_by(Quarter, Weather_Situation) %>%
+  summarise(Users = ceiling(mean(Users_Registered)))
+
+ggplot(df_bike_line, aes(x = Quarter,  y = Users)) +
+  geom_line() +
+  geom_smooth(aes(color = Weather_Situation,
+                  fill = Weather_Situation), method = "lm") +
+  geom_point() +
+  ylim(0, 1000) +
+  facet_wrap(~ Weather_Situation, scales = "free_x") +
+  geom_forecast(stat = "forecast", position = "identity",
+                colour = "lightblue", showgap = FALSE) +
+  geom_text(aes(label = Users),
+            vjust = -2.5, color = "black", size = 1.7) +
+  scale_fill_brewer(palette = "Dark2") +
+  ggtitle("Quarterly Usage of Bikes Based on Weather Situation with Future Prediction") +
+  xlab("Year and Quarters") +
+  ylab("Number of Users") +
+  scale_x_yearqtr(format = "%YQ%q") +
+  theme(plot.title = element_text(size = 13, face = "bold.italic", color = "red", hjust = 0.5),
+        axis.title.x = element_text(size = 7, face = "bold"),
+        axis.title.y = element_text(size = 7, face = "bold"),
+        axis.text.x = element_text(size = 5),
+        axis.text.y = element_text(size = 5),
+        legend.position = "top",
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "blue", size = 7, face = "bold"),
+        strip.text = element_text(size = 7))
+
+```
+
+## Network Graph
+
+## The graph is showcasing the 20 minimally used routes.
+
+```{r}
+
+# Selecting the source and destination and summarizing the total users
+plot_net <- dplyr::select(df_bike_sharing, c(Source, Destination, Users_Total))
+
+plot_net_filtered <- plot_net %>%
+  group_by(Source, Destination) %>%
+  summarise(Users_Avg = mean(Users_Total)) %>%
+  arrange(Users_Avg) %>%
+  head(20)
+
+# Creating a network
+grph_net <- graph.data.frame(plot_net_filtered[c(1, 2, 3)], directed = TRUE)
+
+V(grph_net)$size <- plot_net_filtered$Users_Avg
+
+# Plotting the network
+plot(grph_net,
+     layout = layout.auto,
+     vertex.size = 10,
+     vertex.color = "blue",
+     vertex.label.cex = 0.8,
+     vertex.label.color = "black",
+     edge.arrow.size = 0.1,
+)
+title(main =list("Rarely Used Routes", cex=1.5))
+```
+
+## Map View of stations
+
+##The map shows network of various bike stations and relative locations in Boston
+
+```{r}
+
+# Selecting the source and destination with respective longitude and latitude columns
+plot_map_filtered <- df_bike_sharing %>%
+  dplyr::select(c(Source, Destination, Src_Long,
+                  Src_Lat, Dest_Long, Dest_Lat, Users_Total)) %>%
+  group_by(Source, Destination, Src_Long,
+                  Src_Lat, Dest_Long, Dest_Lat) %>%
+  summarise(Users = round(mean(Users_Total), 0))
+
+# Using Google API to plot the mapview
+api_key <- register_google(key = "AIzaSyCO_xreF1k7Gx-grRe5Dzz17BdzRca5398")
+map_canvas <- get_map(c(left = min(plot_map_filtered$Src_Long), 
+                  bottom = min(plot_map_filtered$Src_Lat), 
+                  right = max(plot_map_filtered$Dest_Long), 
+                  top = max(plot_map_filtered$Dest_Lat)),
+                  maptype = "satellite",
+                  source = "google",
+                  zoom = 10)
+
+# Plotting using ggmap
+ggmap(map_canvas, darken = c(0.6, "white")) + 
+  geom_segment(data = plot_map_filtered,
+               aes(x = Src_Long, 
+                   y = Src_Lat,
+                   xend = Dest_Long,
+                   yend = Dest_Lat,
+                   alpha = sqrt(Users)),
+               color = "#000000") +
+  coord_cartesian() +
+  scale_alpha(range = c(0.0001, .5)) +
+  geom_point(data = plot_map_filtered %>% 
+               group_by(longitude = Src_Long,
+                        latitude = Src_Lat) %>%
+               summarize(rides = sum(Users)),
+             aes(x = longitude, y = latitude, size = rides),
+             color = "#009900", alpha = .4) + 
+  scale_size_continuous(range(4, 100)) +
+  scale_color_viridis_c() + 
+  scale_fill_viridis_c() + 
+  theme_nothing()
+
+# Saving the html output as png in local drive
+ggsave(filename = "station-network.jpg", width = 8, units = "in")
+
+```
+
+## Word Cloud
+
+## This visualization is displaying the routes, the size of the text depends on the number of users
+   travelling on the route. 
+
+```{r}
+
+# Aggregating Total Number of users on a particular route using Group by
+
+plot_cloud_filtered <- df_bike_sharing %>%
+  dplyr::select(c(Source, Destination, Users_Total)) %>%
+  group_by(Source, Destination) %>%
+  summarise(Users = ceiling(mean(Users_Total)))
+
+# Concatenating source and destination
+plot_cloud_filtered$concat <- paste(plot_cloud_filtered$Source,
+                                    plot_cloud_filtered$Destination,
+                                    sep = " --> ")
+
+set.seed(1234)
+word_cloud <- wordcloud2(data = plot_cloud_filtered[c(4,3)],
+                        size = 0.5, color = 'random-dark', gridSize = 15,
+                        shape = "diamond", ellipticity = 0.2,
+                        fontWeight = "normal", shuffle = FALSE) 
+word_cloud
+
+```
